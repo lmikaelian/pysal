@@ -36,6 +36,28 @@ class Network:
                     If True (default), keep only unique segments (i.e., prune out any 
                     duplicated segments). 
                     If False keep all segments.
+                    
+    ##########################################################################################################################
+    congest_factor: int
+                    The amount of congested to be used when calculating segment travel 
+                    times.
+                    -- Default is None
+    
+    seg_speed:      str
+                    The name of the column in the input shapefile's attribute table 
+                    that contains the travel speeds for each segment.
+                    -- Default is None
+                    
+    conversion_rate:int
+                    The integer used to multiply the segment lengths in order to convert 
+                    them into the units of the the travel speeds of the input shapefile.
+                    -- Default is None
+                    
+    calc_ttime:     bool
+                    If False (default), use travel lengths to compute cost matrices.
+                    If True, use travel times to compute cost matrices
+                    -- Default is False
+    ##########################################################################################################################
 
     Attributes
     ----------
@@ -51,6 +73,16 @@ class Network:
     edge_lengths:   dict
                     Keys are tuples of sorted node IDs representing an edge and values are
                     the length.
+                    
+    ##########################################################################################################################
+    edge_time:      dict
+                    Keys are tuples of sorted node IDs representing an edge and values are
+                    travel time, in minutes.
+                    
+    edge_speed:     dict
+                    Keys are tuples of sorted node IDs representing an edge and values are
+                    the travel speed.
+    ##########################################################################################################################
 
     pointpatterns:  dict
                     Keys are a string name of the pattern and values are point pattern 
@@ -89,15 +121,34 @@ class Network:
     >>> ntw.snapobservations(ps.examples.get_path('schools.shp'), 'schools', attribute=False)
     """
 
-    def __init__(self, in_shp=None, node_sig=11, unique_segs=True):
+    def __init__(self, 
+                 in_shp=None, 
+                 node_sig=11, 
+                 unique_segs=True, 
+                 #############################################################################################################
+                 congest_factor=None, #an int representing congestion on the road network
+                 seg_speed=None, #seg_speed is the name of the column in the dbf which contains the road speed
+                 conversion_rate=None, #conversion rate from the unit of the data to the unit of the speed
+                 calc_ttime=False): #flag for using travel time instead of shape lengths
+                 #############################################################################################################
         if in_shp:
             self.in_shp = in_shp
             self.node_sig = node_sig
             self.unique_segs = unique_segs
+            ##################################################################################################################
+            self.congest_factor = congest_factor #an int representing congestion on the road network
+            self.seg_speed = seg_speed #seg_speed is the name of the column in the dbf which contains the road speed
+            self.conversion_rate = conversion_rate #conversion rate from the unit of the data to the unit of the speed
+            self.calc_ttime = calc_ttime #flag for using travel time instead of shape lengths
+            ##################################################################################################################
 
             self.adjacencylist = defaultdict(list)
             self.nodes = {}
             self.edge_lengths = {}
+            ##################################################################################################################
+            self.edge_time = {} #the travel time along each edge of the network
+            self.edge_speed = {} #the travel speed along each edge of the network
+            ##################################################################################################################
             self.edges = []
 
             self.pointpatterns = {}
@@ -134,8 +185,13 @@ class Network:
         """
         nodecount = 0
         shps = ps.open(self.in_shp)
-        for shp in shps:
-            vertices = shp.vertices
+        ######################################################################################################################
+        dbfs = ps.open(self.in_shp[:-3]+'dbf') #access the .dbf file associated with the road shapefile
+        for shp in range(len(shps)): #alternative set-up for the loop
+        #for shp in shps:
+            vertices = shps[shp].vertices #alternative assignment for vertices
+            #vertices = shp.vertices
+            ##################################################################################################################
             for i, v in enumerate(vertices[:-1]):
                 v = self._round_sig(v)
                 try:
@@ -159,6 +215,15 @@ class Network:
                 self.edges.append(edge)
                 length = util.compute_length(v, vertices[i+1])
                 self.edge_lengths[edge] = length
+                ##############################################################################################################
+                if self.calc_ttime == True:
+                    converted_length = length * self.conversion_rate #convert length to the unit of the road speed
+                    self.edge_speed[edge] = dbfs.by_col[self.seg_speed][shp] #seg_speed is the name of the column with the road speed in the dbf
+                    if self.congest_factor == None: #compute edge_time without congestion
+                        self.edge_time[edge] = ((converted_length * self.edge_speed[edge])/60.)
+                    else: #compute edge_time with congestion
+                        self.edge_time[edge] = ((converted_length * self.edge_speed[edge])/60.) * self.congest_factor
+                ##############################################################################################################
         if self.unique_segs == True:
             # Remove duplicate edges and duplicate adjacent nodes.
             self.edges = list(set(self.edges))
@@ -411,9 +476,22 @@ class Network:
 
         d1 = util.compute_length((x,y), self.node_coords[edge[0]])
         d2 = util.compute_length((x,y), self.node_coords[edge[1]])
+        ######################################################################################################################
+        if self.calc_ttime == True: #compute d1 and d2 in terms of travel time instead of travel length
+            if self.congest_factor == None: #compute d1 and d2 without congestion
+                d1_converted = d1 * self.conversion_rate
+                d2_converted = d2 * self.conversion_rate #distance in terms of the travel speed's units
+                d1 = (d1_converted * self.edge_speed[edge]) / 60.
+                d2 = (d2_converted * self.edge_speed[edge]) / 60. #travel time, in minutes
+            else: #compute d1 and d2 with congestion
+                d1_converted = d1 * self.conversion_rate
+                d2_converted = d2 * self.conversion_rate #distance in terms of the travel speed's units
+                d1 = ((d1_converted * self.edge_speed[edge]) / 60.) * self.congest_factor
+                d2 = ((d2_converted * self.edge_speed[edge]) / 60.) * self.congest_factor #congested travel time, in minutes
+        ######################################################################################################################
         return d1, d2
 
-    def _snap_to_edge(self, pointpattern):
+    def _snap_to_edge(self,pointpattern):
         """
         Used internally to snap point observations to network edges.
 
@@ -474,7 +552,6 @@ class Network:
         pointpattern.obs_to_edge = obs_to_edge
         pointpattern.dist_to_node = dist_to_node
         pointpattern.obs_to_node = obs_to_node
-
 
     def count_per_edge(self, obs_on_network, graph=True):
         """
@@ -632,7 +709,13 @@ class Network:
         nnodes = len(self.node_list)
         self.distancematrix = np.empty((nnodes, nnodes))
         for node in self.node_list:
-            distance, pred = util.dijkstra(self, self.edge_lengths, node, n=float('inf'))
+            ##################################################################################################################
+            #distance, pred = util.dijkstra(self, self.edge_lengths, node, n=float('inf'))
+            if self.calc_ttime == True: #call the dijkstra function using travel times instead of lengths
+                distance, pred = util.dijkstra(self, self.edge_time, node, n=float('inf')) #call dijkstra using time, not length
+            else: #call the dijkstra using edge_lengths, as before
+                distance, pred = util.dijkstra(self, self.edge_lengths, node, n=float('inf'))
+            ##################################################################################################################
             pred = np.array(pred)
             #tree = util.generatetree(pred)     <---- something to look at in the future
             tree = None
@@ -692,7 +775,6 @@ class Network:
         # Output setup
         nearest = np.empty((nsource_pts, ndest_pts))
         nearest[:] = np.inf
-
         for p1 in src_indices:
             # Get the source nodes and dist to source nodes.
             source1, source2 = src_nodes[p1]
@@ -711,7 +793,20 @@ class Network:
                     x2,y2 = destpattern.snapped_coordinates[p2]
                     xd = x1-x2
                     yd = y1-y2
-                    nearest[p1,p2] = np.sqrt(xd*xd + yd*yd)
+                    ##########################################################################################################
+                    #nearest[p1,p2] = np.sqrt(xd*xd + yd*yd)
+                    if self.calc_ttime == True: #compute nearest neighbor distances using travel times instead of Euclidean distance
+                        edgeid = tuple(set1) #tuple made up of the edge indices of the vertices being connected by the edge
+                        if self.congest_factor==None: #compute nearest neighbor distances using uncongested travel times
+                            nearest[p1,p2] = ((np.sqrt(xd*xd + yd*yd) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.
+                            #nearest[p1,p2] = ((util.compute_length((x1,x2),(y1,y2)) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.
+                        else: #find nearest neighbor distances using congested travel time
+                            nearest[p1,p2] = (((np.sqrt(xd*xd + yd*yd) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.) * self.congest_factor
+                            #nearest[p1,p2] = (((util.compute_length((x1,x2),(y1,y2)) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.) * self.congest_factor
+                    else:
+                        nearest[p1,p2] = np.sqrt(xd*xd + yd*yd) #compute nearest neighbor distances in Euclidean distances
+                        #nearest[p1,p2] = util.compute_length((x1,x2),(y1,y2))
+                    ##########################################################################################################
 
                 else:
                     ddist1, ddist2 = dest_dist_to_node[p2].values()
@@ -745,9 +840,11 @@ class Network:
                     if len_1 > len_2:
                         sp_12 = len_2
                     nearest[p1, p2] = sp_12
+                    import pandas as pd
                 if symmetric:
                     # Mirror the upper and lower triangle when symmetric.
-                    nearest[p2,p1] = nearest[p1,p2]                    
+                    nearest[p2,p1] = nearest[p1,p2]
+
         # Populate the main diagonal when symmetric.
         if symmetric:
             if fill_diagonal == None:
