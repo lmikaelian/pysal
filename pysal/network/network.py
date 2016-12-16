@@ -38,7 +38,7 @@ class Network:
                     If False keep all segments.
                     
     ##########################################################################################################################
-    congest_factor: int
+    congest_factor: int  ############# <---------------------------------------------------- James comment: NEEDS TO BE FLOAT
                     The amount of congested to be used when calculating segment travel 
                     times.
                     -- Default is None
@@ -48,7 +48,7 @@ class Network:
                     that contains the travel speeds for each segment.
                     -- Default is None
                     
-    conversion_rate:int
+    conversion_rate:int  ############# <---------------------------------------------------- James comment: NEEDS TO BE FLOAT
                     The integer used to multiply the segment lengths in order to convert 
                     them into the units of the the travel speeds of the input shapefile.
                     -- Default is None
@@ -444,7 +444,9 @@ class Network:
         -------
         """
 
-        self.pointpatterns[name] = PointPattern(shapefile, idvariable=idvariable, attribute=attribute)
+        self.pointpatterns[name] = PointPattern(shapefile, 
+                                                idvariable=idvariable, 
+                                                attribute=attribute)
         self._snap_to_edge(self.pointpatterns[name])
 
     def compute_distance_to_nodes(self, x, y, edge):
@@ -669,19 +671,59 @@ class Network:
             idx = np.where(r < stops)[0][0]
             assignment_edge = edges[idx]
             distance_from_start = stops[idx] - r
+
+            
+            
+            ###############################################################################################################
+            if self.calc_ttime == True:
+                if self.congest_factor==None:
+                    distance_from_start = (((distance_from_start * self.conversion_rate)\
+                                            * self.edge_speed[assignment_edge]) / 60.0)
+                else:
+                    distance_from_start = ((((distance_from_start * self.conversion_rate)\
+                                            * self.edge_speed[assignment_edge]) / 60.)\
+                                            * self.congest_factor)
+            
+            ###############################################################################################################
+            
+            
             # Populate the coordinates dict.
             x0, y0 = self._newpoint_coords(assignment_edge, distance_from_start)
             simpts.snapped_coordinates[i] = (x0, y0)
             simpts.obs_to_node[assignment_edge[0]].append(i)
             simpts.obs_to_node[assignment_edge[1]].append(i)
 
-            # Populate the distance to node.
-            simpts.dist_to_node[i] = {assignment_edge[0] : distance_from_start,
-                    assignment_edge[1] : self.edge_lengths[edges[idx]] - distance_from_start}
 
+            
+            # Populate the distance to node.
+            #simpts.dist_to_node[i] = {assignment_edge[0] : distance_from_start,
+            #        assignment_edge[1] : self.edge_lengths[edges[idx]] - distance_from_start}
+            
+            
+            ###############################################################################################################
+            # Populate the distance to node.
+            if self.calc_ttime == True:
+                if self.congest_factor==None:
+                    simpts.dist_to_node[i] = {assignment_edge[0] : distance_from_start,
+                                              assignment_edge[1] :\
+                                              self.edge_time[edges[idx]]\
+                                              - distance_from_start}
+                else:
+                    simpts.dist_to_node[i] = {assignment_edge[0] : distance_from_start,
+                                              assignment_edge[1] :\
+                                              (self.edge_time[edges[idx]]\
+                                              - distance_from_start)\
+                                              * self.congest_factor}
+            else:
+                simpts.dist_to_node[i] = {assignment_edge[0] : distance_from_start,
+                                          assignment_edge[1] :\
+                                          self.edge_lengths[edges[idx]]\
+                                          - distance_from_start}
+            ###############################################################################################################
+            
             simpts.points = simpts.snapped_coordinates
             simpts.npoints = len(simpts.points)
-
+        
         return simpts
 
     def enum_links_node(self, v0):
@@ -788,35 +830,50 @@ class Network:
             for p2 in dest_searchpts:
                 dest1, dest2 = dest_nodes[p2]
                 set2 = set(dest_nodes[p2])
+                #########################################################################################
+                edgeid = tuple(set1) #tuple made up of the edge indices of the vertices being connected by the edge##############################################
+                #########################################################################################
                 if set1 == set2: # same edge
                     x1,y1 = sourcepattern.snapped_coordinates[p1]
                     x2,y2 = destpattern.snapped_coordinates[p2]
-                    xd = x1-x2
-                    yd = y1-y2
+                    #xd = x1-x2
+                    #yd = y1-y2
                     ##########################################################################################################
-                    #nearest[p1,p2] = np.sqrt(xd*xd + yd*yd)
                     if self.calc_ttime == True: #compute nearest neighbor distances using travel times instead of Euclidean distance
-                        edgeid = tuple(set1) #tuple made up of the edge indices of the vertices being connected by the edge
                         if self.congest_factor==None: #compute nearest neighbor distances using uncongested travel times
-                            nearest[p1,p2] = ((np.sqrt(xd*xd + yd*yd) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.
+                            #nearest[p1,p2] = ((np.sqrt(xd*xd + yd*yd) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.
                             #nearest[p1,p2] = ((util.compute_length((x1,x2),(y1,y2)) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.
+                            computed_length = util.compute_length((x1,y1),
+                                                                  (x2,y2))
+                            trav_time = ((computed_length * self.conversion_rate)\
+                                          * self.edge_speed[edgeid]) / 60.
+                            nearest[p1,p2] = trav_time
+                    
                         else: #find nearest neighbor distances using congested travel time
-                            nearest[p1,p2] = (((np.sqrt(xd*xd + yd*yd) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.) * self.congest_factor
+                            #nearest[p1,p2] = (((np.sqrt(xd*xd + yd*yd) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.) * self.congest_factor
                             #nearest[p1,p2] = (((util.compute_length((x1,x2),(y1,y2)) * self.conversion_rate) * self.edge_speed[edgeid]) / 60.) * self.congest_factor
+                            computed_length = util.compute_length((x1,y1),
+                                                                  (x2,y2))
+                            trav_time = ((computed_length * self.conversion_rate)\
+                                          * self.edge_speed[edgeid]) / 60.
+                            nearest[p1,p2] = trav_time * self.congest_factor
+                                                
                     else:
-                        nearest[p1,p2] = np.sqrt(xd*xd + yd*yd) #compute nearest neighbor distances in Euclidean distances
+                        #nearest[p1,p2] = np.sqrt(xd*xd + yd*yd) #compute nearest neighbor distances in Euclidean distances
                         #nearest[p1,p2] = util.compute_length((x1,x2),(y1,y2))
+                        nearest[p1,p2] = util.compute_length((x1,y1),(x2,y2))
                     ##########################################################################################################
-
+                    
                 else:
                     ddist1, ddist2 = dest_dist_to_node[p2].values()
                     d11 = self.alldistances[source1][0][dest1]
                     d21 = self.alldistances[source2][0][dest1]
                     d12 = self.alldistances[source1][0][dest2]
                     d22 = self.alldistances[source2][0][dest2]
-
+                    
                     # Find the shortest distance from the path passing through each of the 
                     # two origin nodes to the first destination node.
+                    
                     sd_1 = d11 + sdist1
                     sd_21 = d21 + sdist2
                     if sd_1 > sd_21:
@@ -840,7 +897,7 @@ class Network:
                     if len_1 > len_2:
                         sp_12 = len_2
                     nearest[p1, p2] = sp_12
-                    import pandas as pd
+                    
                 if symmetric:
                     # Mirror the upper and lower triangle when symmetric.
                     nearest[p2,p1] = nearest[p1,p2]
